@@ -3,25 +3,30 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>神保町カフェマップ（CORS対策版）</title>
+<title>神保町カフェマップ（公開CSV版・スマホ向け簡素UI）</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 <style>
   html, body { height:100%; margin:0; }
   #toolbar { padding:8px 10px; border-bottom:1px solid #ddd; font-size:14px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-  #map { height: calc(100% - 200px); }
-  #diag, #log, #notice { padding:6px 10px; font-size:12px; background:#fafafa; border-top:1px solid #eee; }
-  #log { height:72px; overflow:auto; background:#fcfcfc; }
+  #toolbar > * { margin:2px 0; }
+  #map { height: calc(100% - 150px); }
+  #notice, #diag, #log { padding:6px 10px; font-size:12px; background:#fafafa; border-top:1px solid #eee; }
+  #log { height:60px; overflow:auto; background:#fcfcfc; }
   .legend { position:fixed; bottom:16px; left:12px; z-index:9999; background:#fff; border:1px solid #ccc; padding:8px 10px; font-size:12px; }
   .legend i { display:inline-block; width:10px; height:10px; margin-right:6px; vertical-align:middle; }
-  input, select, button { font-size:14px; }
+  input, button { font-size:14px; }
   .bad { color:#b00020; font-weight:600; }
   .ok { color:#006400; font-weight:600; }
   .muted { color:#666; }
+  @media (max-width: 520px){
+    #map { height: calc(100% - 180px); }
+    #csvUrl { width: 100%; max-width: 100%; }
+  }
 </style>
 </head>
 <body>
 <div id="toolbar">
-  <label>CSV/編集URL:
+  <label>CSV URL:
     <input id="csvUrl" type="text" size="48"
       value="https://docs.google.com/spreadsheets/d/e/2PACX-1vQCG64lx6GnFWMub2geD9eM8Dmd3nxJpJI89z2N2P6iqZ5HcFKR1ZL_4bhhU4mEzKgAENjRyotiRw4f/pub?gid=0&single=true&output=csv" />
   </label>
@@ -31,10 +36,6 @@
   <label>日時(JST): <input id="dt" type="datetime-local" /></label>
   <label title="祝日列（祝o/祝c）を当該日として使用"><input id="toggleHoliday" type="checkbox" />祝日列優先</label>
   <label title="ON: 営業中のみ / OFF: 全店表示"><input id="onlyOpen" type="checkbox" checked />営業中のみ</label>
-  <br/>
-  <label>CSVファイル: <input id="fileInput" type="file" accept=".csv,text/csv" /></label>
-  <button id="btnLoadFile" disabled>ファイルを読み込み</button>
-  <span class="muted">（ローカルCSV利用時のみ使用）</span>
 </div>
 
 <div id="notice"></div>
@@ -49,35 +50,29 @@
 <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/timezone.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/utc.min.js"></script>
 <script>
-dayjs.extend(window.dayjs_plugin_utc); dayjs.extend(window.dayjs_plugin_timezone);
+dayjs.extend(window.dayjs_plugin_utc);
+dayjs.extend(window.dayjs_plugin_timezone);
 const JST = "Asia/Tokyo";
 
-/* === file:// で開いたときの警告 === */
+/* === file:// で開いたときの注意喚起（CORS対策）=== */
 const noticeEl = document.getElementById('notice');
 if (location.protocol === 'file:') {
   noticeEl.innerHTML =
     '<span class="bad">注意:</span> このページは <b>file:///</b> で開かれています。' +
-    'この状態では Google のCSVに対する fetch が <b>CORS 制限</b>で失敗しやすく、' +
-    '「CSV取得失敗: NetworkError」が発生します。' +
-    '<br>対処: <b>HTTP/HTTPS で配信</b>してください（例: GitHub Pages／python -m http.server／VSCode Live Server）。' +
-    '<br>または下の「CSVファイル」から <b>ローカル読込</b>をご利用ください。';
+    '外部CSV（Google）への fetch は <b>CORS 制限</b>で失敗する場合があります。' +
+    '<br>対処: <b>HTTP/HTTPS</b> で配信して開いてください（GitHub Pages、http://localhost など）。';
 }
 
 /* === 地図初期化 === */
 let map = L.map('map', { zoomControl: true });
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
-map.setView([35.695, 139.757], 16);
+map.setView([35.695, 139.757], 16); // 神保町
 let markersLayer = L.layerGroup().addTo(map);
 
 const logEl = document.getElementById('log');
 const diagEl = document.getElementById('diag');
 function log(s){ const p=document.createElement('div'); p.textContent=s; logEl.appendChild(p); logEl.scrollTop=logEl.scrollHeight; }
 function setDiag(html){ diagEl.innerHTML = html; }
-
-/* === 入力支援 === */
-const fileInput = document.getElementById('fileInput');
-const btnLoadFile = document.getElementById('btnLoadFile');
-fileInput.addEventListener('change', ()=>{ btnLoadFile.disabled = !fileInput.files?.length; });
 
 /* === 色定義 === */
 const COLORS = ["blue","green","red","purple","orange","darkred","cadetblue","darkgreen","darkblue","darkpurple","pink","lightblue","lightgreen","gray","black"];
@@ -99,33 +94,49 @@ function toNumberStrict(val){
 const CLOSED = new Set(["休","休み","定休","定休日","-","—","–","ー","×","なし","ナシ","休業","close","closed"]);
 function parseTime(raw){
   if (raw == null) return null;
-  let s = String(raw).trim(); if (!s) return null;
+  let s = String(raw).trim();
+  if (!s) return null;
   s = zen2han(s).toLowerCase();
   for (const t of CLOSED){ if (s.includes(t)) return null; }
   let m = s.match(/(\d{1,2})\s*[:：]?\s*(\d{2})/);
-  if (m){ let hh=+m[1], mm=+m[2]; if (hh===24&&mm===0) return {h:23,m:59}; if (hh>=0&&hh<=23&&mm>=0&&mm<=59) return {h:hh,m:mm}; }
-  m = s.match(/(\d{1,2})\s*時/); if (m){ let hh=+m[1]; if (hh>=0&&hh<=23) return {h:hh,m:0}; }
+  if (m){
+    let hh=+m[1], mm=+m[2];
+    if (hh===24 && mm===0) return {h:23, m:59};
+    if (hh>=0 && hh<=23 && mm>=0 && mm<=59) return {h:hh, m:mm};
+  }
+  m = s.match(/(\d{1,2})\s*時/);
+  if (m){
+    let hh=+m[1];
+    if (hh>=0 && hh<=23) return {h:hh, m:0};
+  }
   return null;
 }
 function isOpenAt(row, dt, useHoliday, columns){
   const wd = dt.day(); // Sun=0
   const wdMap = {1:["月o","月c"], 2:["火o","火c"], 3:["水o","水c"], 4:["木o","木c"], 5:["金o","金c"], 6:["土o","土c"], 0:["日o","日c"]};
-  let oCol,cCol,label;
-  if (useHoliday && columns.includes("祝o") && columns.includes("祝c")){ oCol="祝o"; cCol="祝c"; label="祝"; }
-  else { [oCol,cCol]=wdMap[wd]; label="日月火水木金土"[wd]; }
-  const o=parseTime(row[oCol]), c=parseTime(row[cCol]);
-  if (!o || !c) return {open:false,label, oRaw:row[oCol], cRaw:row[cCol]};
-  const oDT=dt.tz(JST).set('hour',o.h).set('minute',o.m).set('second',0).set('millisecond',0);
-  let cDT=dt.tz(JST).set('hour',c.h).set('minute',c.m).set('second',0).set('millisecond',0);
-  if (cDT.valueOf() <= oDT.valueOf()) cDT=cDT.add(1,'day'); // 日跨ぎ
-  return {open: dt.valueOf() >= oDT.valueOf() && dt.valueOf() < cDT.valueOf(), label, oRaw:row[oCol], cRaw:row[cCol]};
+  let oCol, cCol, label;
+  if (useHoliday && columns.includes("祝o") && columns.includes("祝c")){
+    oCol="祝o"; cCol="祝c"; label="祝";
+  } else {
+    [oCol, cCol] = wdMap[wd]; label = "日月火水木金土"[wd];
+  }
+  const o = parseTime(row[oCol]);
+  const c = parseTime(row[cCol]);
+  if (!o || !c) return {open:false, label, oRaw:row[oCol], cRaw:row[cCol]};
+  const oDT = dt.tz(JST).set('hour',o.h).set('minute',o.m).set('second',0).set('millisecond',0);
+  let cDT = dt.tz(JST).set('hour',c.h).set('minute',c.m).set('second',0).set('millisecond',0);
+  if (cDT.valueOf() <= oDT.valueOf()) cDT = cDT.add(1, 'day'); // 日跨ぎ
+  const openNow = dt.valueOf() >= oDT.valueOf() && dt.valueOf() < cDT.valueOf();
+  return {open:openNow, label, oRaw:row[oCol], cRaw:row[cCol]};
 }
 
 /* === 凡例 === */
 function buildLegend(cat2color){
-  const legend=document.getElementById('legend'); legend.innerHTML="<b>カテゴリ凡例</b><br/>";
+  const legend = document.getElementById('legend');
+  legend.innerHTML = "<b>カテゴリ凡例</b><br/>";
   Object.entries(cat2color).forEach(([cat,col])=>{
-    const line=document.createElement('div'); line.innerHTML=`<i style="background:${col}"></i>${cat}`;
+    const line = document.createElement('div');
+    line.innerHTML = `<i style="background:${col}"></i>${cat}`;
     legend.appendChild(line);
   });
 }
@@ -137,39 +148,49 @@ function parseAndRender(text, nowJST, useHoliday, onlyOpen){
   const cols = (parsed.meta?.fields || []).map(s => String(s).trim());
   const must = ["名称","緯度","経度"];
   const miss = must.filter(c => !cols.includes(c));
-  if (miss.length){ setDiag(`<span class="bad">必須列不足:</span> ${miss.join(", ")} ／ 検出: ${cols.join(" | ")}`); return; }
+  if (miss.length){
+    setDiag(`<span class="bad">必須列不足:</span> ${miss.join(", ")} ／ 検出: ${cols.join(" | ")}`);
+    return;
+  }
 
   const norm = rows.map(r=>{ const o={}; Object.keys(r).forEach(k=>o[String(k).trim()]=r[k]); return o; });
+
   const list = [];
   if (onlyOpen){
-    norm.forEach(r=>{ const res=isOpenAt(r, nowJST, useHoliday, cols); if (res.open) list.push({...r, __label:res.label, __oRaw:res.oRaw, __cRaw:res.cRaw}); });
+    norm.forEach(r=>{
+      const res = isOpenAt(r, nowJST, useHoliday, cols);
+      if (res.open) list.push({...r, __label:res.label, __oRaw:res.oRaw, __cRaw:res.cRaw});
+    });
   } else {
-    const wd=nowJST.day(); const wdMap={1:["月o","月c"],2:["火o","火c"],3:["水o","水c"],4:["木o","木c"],5:["金o","金c"],6:["土o","土c"],0:["日o","日c"]};
-    let oCol,cCol,label; if (useHoliday && cols.includes("祝o") && cols.includes("祝c")){ oCol="祝o"; cCol="祝c"; label="祝"; }
-    else { [oCol,cCol]=wdMap[wd]; label="日月火水木金土"[wd]; }
+    const wd = nowJST.day();
+    const wdMap = {1:["月o","月c"], 2:["火o","火c"], 3:["水o","水c"], 4:["木o","木c"], 5:["金o","金c"], 6:["土o","土c"], 0:["日o","日c"]};
+    let oCol, cCol, label;
+    if (useHoliday && cols.includes("祝o") && cols.includes("祝c")){ oCol="祝o"; cCol="祝c"; label="祝"; }
+    else { [oCol, cCol] = wdMap[wd]; label = "日月火水木金土"[wd]; }
     norm.forEach(r=> list.push({...r, __label:label, __oRaw:r[oCol], __cRaw:r[cCol]}));
   }
 
-  // 中心
+  // 中心を計算
   let latSum=0, lonSum=0, n=0;
-  (list.length?list:norm).forEach(r=>{
-    const lat=toNumberStrict(r["緯度"]), lon=toNumberStrict(r["経度"]);
-    if (!Number.isNaN(lat)&&!Number.isNaN(lon)){ latSum+=lat; lonSum+=lon; n++; }
+  (list.length ? list : norm).forEach(r=>{
+    const lat = toNumberStrict(r["緯度"]), lon = toNumberStrict(r["経度"]);
+    if (!Number.isNaN(lat) && !Number.isNaN(lon)){ latSum+=lat; lonSum+=lon; n++; }
   });
   if (n>0) map.setView([latSum/n, lonSum/n], 16);
 
+  // 描画
   markersLayer.clearLayers();
 
-  // カテゴリ列
+  // カテゴリ列（あれば使用）
   let catCol = cols.includes("カテゴリ") ? "カテゴリ" : (cols.find(c=> String(c).startsWith("カテゴリ")) || null);
-  const cats = [...new Set(list.map(r=> (catCol? String(r[catCol]||"未分類") : "未分類")))];
-  const c2c = {}; cats.forEach((c,i)=> c2c[c]=COLORS[i%COLORS.length]); if (cats.length===0) c2c["未分類"]="blue";
+  const cats = [...new Set(list.map(r=> (catCol ? String(r[catCol]||"未分類") : "未分類")))];
+  const c2c = {}; cats.forEach((c,i)=> c2c[c] = COLORS[i % COLORS.length]); if (cats.length===0) c2c["未分類"] = "blue";
   buildLegend(c2c);
 
   let plotted=0;
   list.forEach(r=>{
-    const lat=toNumberStrict(r["緯度"]), lon=toNumberStrict(r["経度"]);
-    if (Number.isNaN(lat)||Number.isNaN(lon)) return;
+    const lat = toNumberStrict(r["緯度"]), lon = toNumberStrict(r["経度"]);
+    if (Number.isNaN(lat) || Number.isNaN(lon)) return;
     const cat = catCol ? String(r[catCol]||"未分類") : "未分類";
     const color = c2c[cat] || "blue";
     const hours = `${r.__label}: ${r.__oRaw??""} - ${r.__cRaw??""}`;
@@ -204,31 +225,11 @@ document.getElementById('btnLoad').addEventListener('click', async ()=>{
   }catch(e){
     setDiag(`<span class="bad">CSV取得失敗:</span> ${e}`);
     if (location.protocol === 'file:') {
-      log("原因候補: file:/// からのクロスオリジン fetch による CORS 制限");
-      log("対処: 1) GitHub Pages 等で https から開く  2) python -m http.server で http://localhost から開く  3) CSVファイルをローカル読込に切替");
+      log("原因候補: file:/// からのクロスオリジン fetch による CORS 制限。HTTP/HTTPS で開いてください。");
     } else {
-      log("他の候補: 公開直後の反映遅延 / 企業ネットワークの制限 / 拡張機能のブロックなど");
+      log("他の候補: 公開直後の反映遅延 / 企業ネットワークの制限 / ブラウザ拡張のブロック等");
     }
   }
-});
-
-/* === CSVファイル（ローカル）から読み込み === */
-document.getElementById('btnLoadFile').addEventListener('click', ()=>{
-  const f = document.getElementById('fileInput').files?.[0];
-  if (!f){ setDiag('<span class="bad">CSVファイルが選択されていません。</span>'); return; }
-  const useHoliday = document.getElementById('toggleHoliday').checked;
-  const onlyOpen = document.getElementById('onlyOpen').checked;
-  const dtInput = document.getElementById('dt').value;
-  const nowJST = dtInput ? dayjs.tz(dtInput, JST) : dayjs().tz(JST);
-
-  const reader = new FileReader();
-  reader.onload = () => {
-    const text = new TextDecoder("utf-8").decode(reader.result);
-    parseAndRender(text, nowJST, useHoliday, onlyOpen);
-    setDiag('<span class="ok">ローカル読込成功</span>');
-  };
-  reader.onerror = () => setDiag('<span class="bad">ファイル読み込みに失敗しました。</span>');
-  reader.readAsArrayBuffer(f);
 });
 
 /* === 疎通テスト（新規タブで開く） === */
