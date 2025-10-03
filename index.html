@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>神保町カフェマップ（公開CSV版・スマホ向け簡素UI）</title>
+<title>神保町カフェマップ（日時分離・即時再描画）</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 <style>
   html, body { height:100%; margin:0; }
   #toolbar { padding:8px 10px; border-bottom:1px solid #ddd; font-size:14px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   #toolbar > * { margin:2px 0; }
-  #map { height: calc(100% - 150px); }
-  #notice, #diag, #log { padding:6px 10px; font-size:12px; background:#fafafa; border-top:1px solid #eee; }
+  #map { height: calc(100% - 170px); }
+  #diag, #log { padding:6px 10px; font-size:12px; background:#fafafa; border-top:1px solid #eee; }
   #log { height:60px; overflow:auto; background:#fcfcfc; }
   .legend { position:fixed; bottom:16px; left:12px; z-index:9999; background:#fff; border:1px solid #ccc; padding:8px 10px; font-size:12px; }
   .legend i { display:inline-block; width:10px; height:10px; margin-right:6px; vertical-align:middle; }
@@ -19,7 +19,7 @@
   .ok { color:#006400; font-weight:600; }
   .muted { color:#666; }
   @media (max-width: 520px){
-    #map { height: calc(100% - 180px); }
+    #map { height: calc(100% - 200px); }
     #csvUrl { width: 100%; max-width: 100%; }
   }
 </style>
@@ -33,12 +33,12 @@
   <button id="btnTest">疎通テスト</button>
   <button id="btnLoad">URLから読み込み</button>
   <br/>
-  <label>日時(JST): <input id="dt" type="datetime-local" /></label>
+  <label>日付(JST): <input id="date" type="date" /></label>
+  <label>時刻(JST): <input id="time" type="time" step="300" /></label>
   <label title="祝日列（祝o/祝c）を当該日として使用"><input id="toggleHoliday" type="checkbox" />祝日列優先</label>
   <label title="ON: 営業中のみ / OFF: 全店表示"><input id="onlyOpen" type="checkbox" checked />営業中のみ</label>
 </div>
 
-<div id="notice"></div>
 <div id="diag">診断: 未読込</div>
 <div id="map"></div>
 <div id="legend" class="legend"><b>カテゴリ凡例</b><br/></div>
@@ -50,34 +50,33 @@
 <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/timezone.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/utc.min.js"></script>
 <script>
+/* ===== Day.js: JST ===== */
 dayjs.extend(window.dayjs_plugin_utc);
 dayjs.extend(window.dayjs_plugin_timezone);
 const JST = "Asia/Tokyo";
 
-/* === file:// で開いたときの注意喚起（CORS対策）=== */
-const noticeEl = document.getElementById('notice');
-if (location.protocol === 'file:') {
-  noticeEl.innerHTML =
-    '<span class="bad">注意:</span> このページは <b>file:///</b> で開かれています。' +
-    '外部CSV（Google）への fetch は <b>CORS 制限</b>で失敗する場合があります。' +
-    '<br>対処: <b>HTTP/HTTPS</b> で配信して開いてください（GitHub Pages、http://localhost など）。';
-}
-
-/* === 地図初期化 === */
+/* ===== 地図初期化 ===== */
 let map = L.map('map', { zoomControl: true });
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
 map.setView([35.695, 139.757], 16); // 神保町
 let markersLayer = L.layerGroup().addTo(map);
 
+/* ===== UI要素 ===== */
 const logEl = document.getElementById('log');
 const diagEl = document.getElementById('diag');
+const dateEl = document.getElementById('date');
+const timeEl = document.getElementById('time');
+const onlyOpenEl = document.getElementById('onlyOpen');
+const holidayEl = document.getElementById('toggleHoliday');
+
+/* ===== ログ/診断 ===== */
 function log(s){ const p=document.createElement('div'); p.textContent=s; logEl.appendChild(p); logEl.scrollTop=logEl.scrollHeight; }
 function setDiag(html){ diagEl.innerHTML = html; }
 
-/* === 色定義 === */
+/* ===== 色定義 ===== */
 const COLORS = ["blue","green","red","purple","orange","darkred","cadetblue","darkgreen","darkblue","darkpurple","pink","lightblue","lightgreen","gray","black"];
 
-/* === 文字/数値ユーティリティ === */
+/* ===== ユーティリティ ===== */
 function zen2han(s){
   const map={'０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9','：':':','．':'.','，':','};
   return s.replace(/[０-９：．，]/g, ch => map[ch] || ch);
@@ -90,7 +89,7 @@ function toNumberStrict(val){
   return parseFloat(s);
 }
 
-/* === 営業時間パース&判定 === */
+/* ===== 営業時間パース＆判定 ===== */
 const CLOSED = new Set(["休","休み","定休","定休日","-","—","–","ー","×","なし","ナシ","休業","close","closed"]);
 function parseTime(raw){
   if (raw == null) return null;
@@ -130,7 +129,7 @@ function isOpenAt(row, dt, useHoliday, columns){
   return {open:openNow, label, oRaw:row[oCol], cRaw:row[cCol]};
 }
 
-/* === 凡例 === */
+/* ===== 凡例 ===== */
 function buildLegend(cat2color){
   const legend = document.getElementById('legend');
   legend.innerHTML = "<b>カテゴリ凡例</b><br/>";
@@ -141,18 +140,13 @@ function buildLegend(cat2color){
   });
 }
 
-/* === 解析→描画 === */
-function parseAndRender(text, nowJST, useHoliday, onlyOpen){
-  const parsed = Papa.parse(text, {header:true, skipEmptyLines:true});
-  const rows = parsed.data;
-  const cols = (parsed.meta?.fields || []).map(s => String(s).trim());
-  const must = ["名称","緯度","経度"];
-  const miss = must.filter(c => !cols.includes(c));
-  if (miss.length){
-    setDiag(`<span class="bad">必須列不足:</span> ${miss.join(", ")} ／ 検出: ${cols.join(" | ")}`);
-    return;
-  }
+/* ===== グローバル状態（CSVキャッシュ） ===== */
+let cachedCsvText = null;
+let cachedRows = null;
+let cachedCols = null;
 
+/* ===== 解析 → 描画（共通） ===== */
+function parseAndRender_fromRows(rows, cols, nowJST, useHoliday, onlyOpen){
   const norm = rows.map(r=>{ const o={}; Object.keys(r).forEach(k=>o[String(k).trim()]=r[k]); return o; });
 
   const list = [];
@@ -208,38 +202,80 @@ function parseAndRender(text, nowJST, useHoliday, onlyOpen){
   if (plotted===0) L.popup().setLatLng(map.getCenter()).setContent("該当時刻に営業中なし、または緯度/経度が不正です。").openOn(map);
 }
 
-/* === URLから読み込み === */
+/* ===== 文字列CSV → 行配列にパース ===== */
+function parseCsvText(text){
+  const parsed = Papa.parse(text, {header:true, skipEmptyLines:true});
+  const rows = parsed.data;
+  const cols = (parsed.meta?.fields || []).map(s => String(s).trim());
+  const must = ["名称","緯度","経度"];
+  const miss = must.filter(c => !cols.includes(c));
+  if (miss.length){
+    setDiag(`<span class="bad">必須列不足:</span> ${miss.join(", ")} ／ 検出: ${cols.join(" | ")}`);
+    cachedRows = null; cachedCols = null;
+    return;
+  }
+  cachedRows = rows;
+  cachedCols = cols;
+}
+
+/* ===== 現在のUIから JST日時を生成 ===== */
+function buildCurrentJST(){
+  // 日付と時刻が両方あれば結合、どちらか欠けていれば現在時刻
+  const d = dateEl.value;
+  const t = timeEl.value;
+  if (d && t){
+    const iso = `${d}T${t}`;
+    return dayjs.tz(iso, JST);
+  } else if (d){
+    return dayjs.tz(d, JST);
+  } else {
+    return dayjs().tz(JST);
+  }
+}
+
+/* ===== 再描画（CSV再取得なし） ===== */
+function rerenderIfReady(){
+  if (!cachedRows || !cachedCols) return;
+  const nowJST = buildCurrentJST();
+  const useHoliday = holidayEl.checked;
+  const onlyOpen = onlyOpenEl.checked;
+  parseAndRender_fromRows(cachedRows, cachedCols, nowJST, useHoliday, onlyOpen);
+}
+
+/* ===== URLから取得 ===== */
 document.getElementById('btnLoad').addEventListener('click', async ()=>{
   const url = document.getElementById('csvUrl').value.trim();
-  const useHoliday = document.getElementById('toggleHoliday').checked;
-  const onlyOpen = document.getElementById('onlyOpen').checked;
-  const dtInput = document.getElementById('dt').value;
-  const nowJST = dtInput ? dayjs.tz(dtInput, JST) : dayjs().tz(JST);
-
   try{
     const res = await fetch(url, { cache:'no-store', mode:'cors', redirect:'follow', credentials:'omit', referrerPolicy:'no-referrer' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const text = await res.text(); // 公開CSVはUTF-8
-    parseAndRender(text, nowJST, useHoliday, onlyOpen);
+    cachedCsvText = text;
+    parseCsvText(text);
+    rerenderIfReady();
     setDiag(`<span class="ok">取得成功</span>`);
   }catch(e){
     setDiag(`<span class="bad">CSV取得失敗:</span> ${e}`);
-    if (location.protocol === 'file:') {
-      log("原因候補: file:/// からのクロスオリジン fetch による CORS 制限。HTTP/HTTPS で開いてください。");
-    } else {
-      log("他の候補: 公開直後の反映遅延 / 企業ネットワークの制限 / ブラウザ拡張のブロック等");
-    }
   }
 });
 
-/* === 疎通テスト（新規タブで開く） === */
+/* ===== 疎通テスト ===== */
 document.getElementById('btnTest').addEventListener('click', ()=>{
   const url = document.getElementById('csvUrl').value.trim();
   window.open(url, '_blank', 'noopener');
 });
 
-/* === 初期化 === */
-document.getElementById('dt').value = dayjs().tz(JST).format("YYYY-MM-DDTHH:mm");
+/* ===== 入力変更で即時再描画（CSV再取得なし） ===== */
+dateEl.addEventListener('change', rerenderIfReady);
+timeEl.addEventListener('change', rerenderIfReady);
+onlyOpenEl.addEventListener('change', rerenderIfReady);
+holidayEl.addEventListener('change', rerenderIfReady);
+
+/* ===== 初期化：今日のJSTと現在時刻をセット ===== */
+(function initDateTime(){
+  const now = dayjs().tz(JST);
+  dateEl.value = now.format("YYYY-MM-DD");
+  timeEl.value = now.format("HH:mm");
+})();
 </script>
 </body>
 </html>
